@@ -7,7 +7,6 @@ cd /d C:\Users\ericm\PycharmProjects\lm_web_helper
 REM === env for your helper (adjust as needed) ===
 set LM_BASE=http://localhost:1234/v1
 set LM_MODEL=meta-llama-3.1-8b-instruct
-#set TAVILY_API_KEY=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
 
 REM === activate venv ===
 call .venv\Scripts\activate

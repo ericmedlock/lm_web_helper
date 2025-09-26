@@ -1,0 +1,37 @@
+Got it—you want it headless and sticky. We’ll turn it into a real Windows service so no window pops up and it restarts if it ever dies.
+
+Single step
+
+Install NSSM (service wrapper). Run this in an elevated PowerShell:
+
+winget install --id NSSM.NSSM -e
+
+
+
+
+# Copy your user API key into the Machine env so the service (LocalSystem) can see it
+if ($env:TAVILY_API_KEY) {
+  [Environment]::SetEnvironmentVariable("TAVILY_API_KEY", $env:TAVILY_API_KEY, "Machine")
+}
+
+$svc  = "LMWebHelper"
+$proj = "C:\Users\ericm\PycharmProjects\lm_web_helper"
+$nssm = "nssm"  # should be on PATH after install
+
+# Install service to run your launcher silently
+& $nssm install $svc "C:\Windows\System32\cmd.exe" "/c $proj\start_server.cmd"
+& $nssm set     $svc AppDirectory      $proj
+& $nssm set     $svc AppStdout         "$proj\service.out.log"
+& $nssm set     $svc AppStderr         "$proj\service.err.log"
+& $nssm set     $svc AppRotateFiles    1
+& $nssm set     $svc AppRotateOnline   1
+& $nssm set     $svc AppRotateBytes    10485760
+& $nssm set     $svc AppRestartDelay   5000
+& $nssm set     $svc Start             SERVICE_AUTO_START
+
+# Start it now
+& $nssm start   $svc
+
+
+test it:
+Invoke-RestMethod -Uri "http://127.0.0.1:5055/ask" -Method Post -ContentType "application/json" -Body (@{ question = "ping: return READY" } | ConvertTo-Json) | Select-Object -ExpandProperty answer
