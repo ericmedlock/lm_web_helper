@@ -30,15 +30,21 @@ def tavily_search(query, max_results=3):
         return None
     url = "https://api.tavily.com/search"
     payload = {
-        "api_key": key,
         "query": query,
         "max_results": max_results,
         "search_depth": "basic",
         "include_images": False,
-        "include_answer": False
+        "include_answer": False,
     }
     try:
-        res = http_post_json(url, payload, headers={"Content-Type":"application/json"})
+        res = http_post_json(
+            url,
+            payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {key}",
+            },
+        )
         items = []
         for r in (res.get("results") or [])[:max_results]:
             items.append({
@@ -46,9 +52,9 @@ def tavily_search(query, max_results=3):
                 "url": r.get("url") or "",
                 "snippet": (r.get("content") or "")[:500]
             })
-        return {"source":"tavily", "items": items}
+        return {"source": "tavily", "items": items}
     except Exception as e:
-        return {"source":"tavily", "error": str(e)}
+        return {"source": "tavily", "error": str(e)}
 
 def wikipedia_search(query, max_results=3):
     try:
