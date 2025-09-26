@@ -106,171 +106,59 @@ def handle_tool_call(name, args):
 # --- Chat loop with tool calls ----------------------------------------------
 
 def chat_with_tools(user_query):
-    system_prompt = (
-        "You are a local assistant with web tools. "
-        "Policy:\n"
-        "1) For any fact that could be time-sensitive (people, titles, prices, laws, schedules), call search_web first.\n"
-        "2) Prefer official sources: *.gov, *.mil, *.edu, or the relevant agency newsroom. "
-        "3) If no official source in results, refine the search (e.g., add 'site:.gov') and search again.\n"
-        "4) After search, call fetch_url on the best official-looking result and read it before answering.\n"
-        "5) Answer ONLY with facts present in fetched/returned sources. If sources conflict or are unclear, say so and do not guess.\n"
-        "Output: a concise answer with 1–2 source URLs and explicit dates."
-    )
+    import datetime
+    def log(msg):
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[lm-web-helper {ts}] {msg}")
 
-    messages = [
-        {"role":"system", "content": system_prompt},
-        {"role":"user",   "content": user_query}
-    ]
-
-    # Define tools once
-    tools = [
-        {
-            "type":"function",
-            "function":{
-                "name":"search_web",
-                "description":"Search the web for up-to-date information.",
-                "parameters":{
-                    "type":"object",
-                    "properties":{
-                        "query":{"type":"string"},
-                        "top_k":{"type":"integer","minimum":1,"maximum":10}
-                    },
-                    "required":["query"]
-                }
-            }
-        },
-        {
-            "type":"function",
-            "function":{
-                "name":"fetch_url",
-                "description":"Fetch a URL and return basic content snippet.",
-                "parameters":{
-                    "type":"object",
-                    "properties":{
-                        "url":{"type":"string"}
-                    },
-                    "required":["url"]
-                }
-            }
-        }
-    ]
-    # Old-style 'functions' array for models that use function_call instead of tool_calls
-    functions = [t["function"] for t in tools]
-
+    log(f"Q: {user_query}")
+    
+    # Since the model doesn't support function calling, do manual search first
+    search_query = user_query
+    if any(k in user_query.lower() for k in ["secretary","governor","senator","minister","president"]):
+        search_query = f"{user_query} site:.gov"
+    
+    log(f"Searching: {search_query}")
+    search_result = handle_tool_call("search_web", {"query": search_query, "top_k": 3})
+    
+    context = ""
+    if search_result and "items" in search_result:
+        context = "\n\nSearch results:\n"
+        for item in search_result["items"]:
+            context += f"- {item['title']}: {item['snippet']} ({item['url']})\n"
+        log(f"Found {len(search_result['items'])} results")
+    else:
+        log(f"Search failed: {search_result}")
+    
+    # Simple chat without function calling
     headers = {"Content-Type":"application/json"}
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
+    
+    prompt = f"""Answer this question using ONLY the search results provided. If the information is not in the search results, say so.
 
-    def completions(body):
-        # include both modern tools and legacy functions to maximize compatibility
-        body.setdefault("tools", tools)
-        body.setdefault("functions", functions)
-        body.setdefault("tool_choice", "auto")
-        body.setdefault("function_call", "auto")
-        return http_post_json(f"{LM_BASE}/chat/completions", body, headers=headers)
+Question: {user_query}
 
-    # ---- First round: let the model decide to call a tool/function
-    resp = completions({
+Instructions:
+- Use only facts from the search results
+- Cite 1-2 source URLs
+- Include dates when available
+- Prefer official .gov sources
+
+{context}
+
+Answer:"""
+    
+    resp = http_post_json(f"{LM_BASE}/chat/completions", {
         "model": MODEL_ID,
-        "messages": messages
-    })
+        "messages": [{"role": "user", "content": prompt}]
+    }, headers=headers)
+    
     choice = (resp.get("choices") or [{}])[0]
-    msg = choice.get("message") or {}
+    answer = choice.get("message", {}).get("content", "(no content)")
+    log(f"Answer length: {len(answer)}")
+    return answer
 
-    # Case A: modern tool_calls array
-    tool_calls = msg.get("tool_calls") or []
-
-    # Case B: legacy function_call object
-    func_call = msg.get("function_call")
-
-    # Case C: some models dump JSON text of the call into content
-    def parse_inline_call(s):
-        try:
-            obj = json.loads(s)
-            if isinstance(obj, dict) and "name" in obj and ("arguments" in obj or "parameters" in obj):
-                # normalize to function_call shape
-                args = obj.get("arguments", obj.get("parameters", {}))
-                if isinstance(args, str):
-                    try: args = json.loads(args)
-                    except Exception: args = {}
-                return {"name": obj["name"], "arguments": json.dumps(args)}
-        except Exception:
-            pass
-        return None
-
-    inline_call = None
-    if not tool_calls and not func_call and isinstance(msg.get("content"), str):
-        inline_call = parse_inline_call(msg["content"])
-
-    # Normalize to a list of calls to execute
-    calls_to_run = []
-    if tool_calls:
-        for tc in tool_calls:
-            calls_to_run.append({
-                "kind": "tool",
-                "id": tc.get("id","tool-call-1"),
-                "name": tc.get("function",{}).get("name",""),
-                "args_json": tc.get("function",{}).get("arguments","{}")
-            })
-    elif func_call:
-        calls_to_run.append({
-            "kind": "function",
-            "id": "function-call-1",
-            "name": func_call.get("name",""),
-            "args_json": func_call.get("arguments","{}")
-        })
-    elif inline_call:
-        calls_to_run.append({
-            "kind": "function",
-            "id": "function-call-1",
-            "name": inline_call["name"],
-            "args_json": inline_call["arguments"]
-        })
-
-    if calls_to_run:
-        # Keep the assistant message that requested the call(s)
-        messages.append({
-            "role":"assistant",
-            "content": msg.get("content") or "",
-            **({"tool_calls": tool_calls} if tool_calls else {}),
-            **({"function_call": func_call} if (func_call and not tool_calls) else {})
-        })
-
-        # Execute at most one call (our policy says 1 unless empty)
-        call = calls_to_run[0]
-        try:
-            args = json.loads(call["args_json"]) if isinstance(call["args_json"], str) else (call["args_json"] or {})
-        except Exception:
-            args = {}
-
-        result = handle_tool_call(call["name"], args)
-
-        # Hand results back using the correct role for each style
-        if call["kind"] == "tool":
-            messages.append({
-                "role":"tool",
-                "tool_call_id": call["id"],
-                "name": call["name"],
-                "content": json.dumps(result)[:8000]
-            })
-        else:
-            # legacy function_call reply
-            messages.append({
-                "role":"function",
-                "name": call["name"],
-                "content": json.dumps(result)[:8000]
-            })
-
-        # Second round: ask the model to produce the final answer
-        resp2 = completions({
-            "model": MODEL_ID,
-            "messages": messages
-        })
-        choice2 = (resp2.get("choices") or [{}])[0]
-        return choice2.get("message",{}).get("content","(no content)")
-
-    # No tool call; return whatever the model said
-    return msg.get("content","(no content)")
 
 
 if __name__ == "__main__":
