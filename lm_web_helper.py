@@ -108,10 +108,13 @@ def handle_tool_call(name, args):
 def chat_with_tools(user_query):
     system_prompt = (
         "You are a local assistant with web tools. "
-        "For any question that could be time-sensitive or fact-based, first call the `search_web` tool. "
-        "Use at most one search_web call per query unless results are empty. "
-        "Optionally call `fetch_url` to read one promising link. "
-        "Then write a concise answer with 1-3 source URLs and dates if present."
+        "Policy:\n"
+        "1) For any fact that could be time-sensitive (people, titles, prices, laws, schedules), call search_web first.\n"
+        "2) Prefer official sources: *.gov, *.mil, *.edu, or the relevant agency newsroom. "
+        "3) If no official source in results, refine the search (e.g., add 'site:.gov') and search again.\n"
+        "4) After search, call fetch_url on the best official-looking result and read it before answering.\n"
+        "5) Answer ONLY with facts present in fetched/returned sources. If sources conflict or are unclear, say so and do not guess.\n"
+        "Output: a concise answer with 1–2 source URLs and explicit dates."
     )
 
     messages = [
